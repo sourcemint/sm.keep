@@ -170,9 +170,9 @@ function commit (packageBasePath, branchName) {
 	], true);
 }
 
-function push (packageBasePath) {
+function push (packageBasePath, branchName) {
 	return runCommands(packageBasePath, [
-		'git push -u origin'
+		'git push -u origin ' + branchName
 	], true);
 }
 
@@ -189,7 +189,7 @@ if (require.main === module) {
 
 						return commit(packageBasePath, branchName).then(function() {
 
-							return push(packageBasePath);
+							return push(packageBasePath, branchName);
 						});
 					});
 				});
