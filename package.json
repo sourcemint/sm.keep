@@ -1,0 +1,14 @@
+{
+  "name": "sm.keep",
+  "version": "0.1.0",
+  "repository": "https://github.com/sourcemint/sm.keep.git",
+  "bin": {
+    "sm.keep": "sm.keep"
+  },
+  "dependencies": {
+    "inquirer": "^0.8.5",
+    "pinf-it-package-insight": "^0.1.8",
+    "q": "^1.4.1",
+    "q-io": "^1.13.1"
+  }
+}

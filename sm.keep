@@ -1,0 +1,202 @@
+#!/usr/bin/env node
+
+
+const PATH = require("path");
+const FS = require("fs");
+const Q = require("q");
+const QFS = require("q-io/fs");
+const SPAWN = require("child_process").spawn;
+const PACKAGE_INSIGHT = require("pinf-it-package-insight");
+const INQUIRER = require("inquirer");
+
+
+function runCommands (basePath, commands, showProgress) {
+	return Q.denodeify(function (callback) {
+		if (process.env.VERBOSE) {
+			console.log("Run commands:", commands, {
+				cwd: basePath
+			});
+		}
+	    var proc = SPAWN("bash", [
+	        "-s"
+	    ], {
+	    	cwd: basePath,
+	    	env: process.env
+	    });
+	    proc.on("error", function(err) {
+	    	return callback(err);
+	    });
+	    var stdout = [];
+	    var stderr = [];
+	    proc.stdout.on('data', function (data) {
+	    	stdout.push(data.toString());
+	    	if (showProgress) process.stdout.write(data);
+	    });
+	    proc.stderr.on('data', function (data) {
+	    	stderr.push(data.toString());
+	    	if (showProgress) process.stdout.write(data);
+	    });
+	    proc.stdin.write(commands.join("\n"));
+	    proc.stdin.end();
+	    proc.on('close', function (code) {
+	    	if (code) {
+	    		var err = new Error("Commands exited with code: " + code);
+	    		err.code = code;
+	    		err.stdout = stdout;
+	    		err.stderr = stderr;
+	    		return callback(err);
+	    	}
+	        return callback(null, stdout.join(""));
+	    });
+	})();
+}
+
+function findPackageRoot (path) {
+	path = path.replace(/\/package\.json$/, "");
+	return QFS.exists(
+		PATH.join(path, "package.json")
+	).then(function (exists) {
+		if (exists) {
+			return path;
+		}
+		var newPath = PATH.dirname(path);
+		if (newPath === path) {
+			throw new Error("No package.json found in parent tree!");
+		}
+		return findPackageRoot(newPath);
+	});
+}
+
+function getGitUrl (descriptorPath) {
+	return Q.denodeify(function (callback) {
+		return PACKAGE_INSIGHT.parseDescriptor(descriptorPath, {
+			rootPath: PATH.dirname(descriptorPath)
+		}, function(err, descriptor) {
+			if (err) return callback(err);
+
+			var url = null;
+			if (Array.isArray(descriptor.normalized.repositories)) {
+				url = descriptor.normalized.repositories[0];
+			}
+
+			var m = url.match(/^https:\/\/github\.com\/([^\/]+)\/(.+?)(\.git)?$/);
+			if (!m) {
+				return callback(new Error("Could not parse git url '" + url + "'"));
+			}
+			url = "git@github.com:" + m[1] + "/" + m[2] + ".git";
+			return callback(null, url);
+		});
+	})();
+}
+
+function getKeepNamespace () {
+	return Q.fcall(function () {
+		var ns = process.env.SM_KEEP_NS || null;
+		if (
+			!ns &&
+			process.env.SM_KEEP_NS_RAW
+		) {
+			// TODO: Use '_' encoder that append all existing '_' with an additinal '_'
+		    //       so we can infinetely nest namespaces. Applies to '~' as well so we can
+		    //       write a generic encoder.
+			ns = process.env.SM_KEEP_NS_RAW.replace(/[\/~]/g, "_");
+		}
+		if (!ns) {
+			throw new Error("The 'SM_KEEP_NS' or 'SM_KEEP_NS_RAW' environment variables must be set!");
+		}
+		return runCommands(__dirname, [
+			"git config user.email"
+		]).then(function (stdout) {
+			var user = stdout.replace(/\n$/, "").split("@");
+			user.reverse();
+			ns += "/" + user.join("/");
+			return ns;
+		});
+	});
+}
+
+function ensureKeepBranch (packageBasePath, keepNamespace) {
+	return Q.fcall(function () {
+		var branchName = "sm.keep/" + keepNamespace;
+		return runCommands(packageBasePath, [
+			'echo "--- checkout -----------------------------------------------"',
+			'if [ "$(git branch --list ' + branchName + ')" ]; then',
+			'    git checkout ' + branchName,
+			'else',
+			'	 git branch --track ' + branchName + ' origin/' + branchName + ' > /dev/null',
+			'    if [ "$(git branch --list ' + branchName + ')" ]; then',
+			'        git checkout ' + branchName,
+			'    else',
+			'        git checkout -b ' + branchName,
+			'    fi',
+			'fi',
+			'echo "--- sanity adjustments -----------------------------------------------"',
+			'if [ -e "node_modules" ]; then',
+			'	if [ ! -f ".gitignore" ]; then',
+			'		touch ".gitignore"',
+			'	fi',
+			'	if ! grep -qe "^\/node_modules\/$" .gitignore; then',
+			'	    echo -e "\n/node_modules/" >> .gitignore',
+			'	fi',
+			'fi',
+			'echo "--- status -----------------------------------------------"',
+			'git status',
+			'echo " ----- "',
+			'git status -s',
+			'echo "--- commit & push ? -----------------------------------------------"'
+		], true).then(function () {
+			return Q.denodeify(function (callback) {
+				return INQUIRER.prompt([
+					{
+						name: "confirm",
+						type: "confirm",
+						message: "Commit and push to origin at branch '" + branchName + "' as show above?"
+					}
+				], function (answers) {
+					if (!answers.confirm) {
+						return callback("You cancelled and other than checking out branch '" + branchName + "' nothing happened.");
+					}
+					return callback(null, branchName);
+				});
+			})();
+		});
+	});
+}
+
+function commit (packageBasePath, branchName) {
+	return runCommands(packageBasePath, [
+		'git add -A',
+		'git commit -m "' + branchName + '"'
+	], true);
+}
+
+function push (packageBasePath) {
+	return runCommands(packageBasePath, [
+		'git push -u origin'
+	], true);
+}
+
+if (require.main === module) {
+	Q.fcall(function () {
+
+		return findPackageRoot(PATH.resolve("package.json")).then(function (packageBasePath) {
+
+			var packageDescriptorPath = PATH.join(packageBasePath, "package.json");
+
+			return getGitUrl(packageDescriptorPath).then(function (url) {
+				return getKeepNamespace().then(function (keepNamespace) {
+					return ensureKeepBranch(packageBasePath, keepNamespace).then(function (branchName) {
+
+						return commit(packageBasePath, branchName).then(function() {
+
+							return push(packageBasePath);
+						});
+					});
+				});
+			});
+		});
+	}).fail(function (err) {
+		console.error("ERROR:", err.stack || err);
+		process.exit(1);
+	});
+}
