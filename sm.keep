@@ -89,6 +89,20 @@ function getGitUrl (descriptorPath) {
 	})();
 }
 
+function ensureRepository (packageBasePath, gitOriginUrl) {
+	return QFS.exists(PATH.join(packageBasePath, ".git")).then(function (exists) {
+		if (exists) {
+			return;
+		}
+		return runCommands(packageBasePath, [
+			"rm -Rf __clone__ > /dev/null || true",
+			"git clone " + gitOriginUrl + " __clone__ || exit 1",
+			"mv __clone__/.git .git",
+			"rm -Rf __clone__"
+		], true);
+	});
+}
+
 function getKeepNamespace () {
 	return Q.fcall(function () {
 		var ns = process.env.SM_KEEP_NS || null;
@@ -132,7 +146,7 @@ function ensureKeepBranch (packageBasePath, keepNamespace) {
 			'fi',
 			'echo "--- sanity adjustments -----------------------------------------------"',
 			'if [ -e "node_modules" ]; then',
-			'	if [ ! -f ".gitignore" ]; then',
+			'	if [ ! -e ".gitignore" ]; then',
 			'		touch ".gitignore"',
 			'	fi',
 			'	if ! grep -qe "^\/node_modules\/$" .gitignore; then',
@@ -184,12 +198,16 @@ if (require.main === module) {
 			var packageDescriptorPath = PATH.join(packageBasePath, "package.json");
 
 			return getGitUrl(packageDescriptorPath).then(function (url) {
-				return getKeepNamespace().then(function (keepNamespace) {
-					return ensureKeepBranch(packageBasePath, keepNamespace).then(function (branchName) {
 
-						return commit(packageBasePath, branchName).then(function() {
+				return ensureRepository(packageBasePath, url).then(function () {
 
-							return push(packageBasePath, branchName);
+					return getKeepNamespace().then(function (keepNamespace) {
+						return ensureKeepBranch(packageBasePath, keepNamespace).then(function (branchName) {
+
+							return commit(packageBasePath, branchName).then(function() {
+
+								return push(packageBasePath, branchName);
+							});
 						});
 					});
 				});
