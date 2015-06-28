@@ -11,3 +11,5 @@ Usage
 
 	sm.keep
 
+Running `sm.keep` on a package will commit all working changes and push them to a namespaced branch at origin.
+
